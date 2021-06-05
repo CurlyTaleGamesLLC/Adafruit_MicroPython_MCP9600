@@ -12,6 +12,8 @@ CircuitPython driver for the MCP9600 thermocouple I2C amplifier
 
 * Author(s): Dan Cogliano, Kattni Rembor
 
+* Ported to Micropython by: Ben Jones
+
 Implementation Notes
 --------------------
 
@@ -30,7 +32,9 @@ Implementation Notes
 
 from struct import unpack
 from micropython import const
-from adafruit_bus_device.i2c_device import I2CDevice
+
+from machine import Pin, I2C
+
 from adafruit_register.i2c_struct import UnaryStruct
 from adafruit_register.i2c_bits import RWBits, ROBits
 from adafruit_register.i2c_bit import RWBit, ROBit
@@ -91,6 +95,9 @@ class MCP9600:
 
 
     """
+
+    # Default Address of the MCP9600
+    ADDR = 0b1100000
 
     # Shutdown mode options
     NORMAL = 0b00
@@ -202,10 +209,13 @@ class MCP9600:
 
     types = ("K", "J", "T", "N", "S", "E", "B", "R")
 
-    def __init__(self, i2c, address=_DEFAULT_ADDRESS, tctype="K", tcfilter=0):
-        self.buf = bytearray(3)
-        self.i2c_device = I2CDevice(i2c, address)
+    def __init__(self, myi2c, address=_DEFAULT_ADDRESS, tctype="K", tcfilter=0):
+        self.buf = bytearray(2)
+        self.singlebyte = bytearray(1)
+        self.i2c_device = myi2c
+        self.ADDR = address
         self.type = tctype
+
         # is this a valid thermocouple type?
         if tctype not in MCP9600.types:
             raise Exception("invalid thermocouple type ({})".format(tctype))
@@ -216,10 +226,13 @@ class MCP9600:
 
         self.buf[0] = _REGISTER_THERM_CFG
         self.buf[1] = tcfilter | (ttype << 4)
-        with self.i2c_device as tci2c:
-            tci2c.write(self.buf, end=2)
-        if self._device_id != 0x40:
-            raise RuntimeError("Failed to find MCP9600 - check wiring!")
+        self.i2c_device.writeto(self.ADDR, self.buf)
+        
+        # I was having trouble porting this, I think this is some sort of self check
+        #with self.i2c_device as tci2c:
+        #    tci2c.write(self.buf, end=2)
+        # if self._device_id != 0x40:
+        #     raise RuntimeError("Failed to find MCP9600 - check wiring!")
 
     def alert_config(
         self,
@@ -329,31 +342,43 @@ class MCP9600:
     def ambient_temperature(self):
         """ Cold junction/ambient/room temperature in Celsius """
         data = self._read_register(_REGISTER_COLD_JUNCTION, 2)
-        value = unpack(">xH", data)[0] * 0.0625
-        if data[1] & 0x80:
-            value -= 4096
-        return value
+        return self.temp_c(data)
 
     @property
     def temperature(self):
         """ Hot junction temperature in Celsius """
         data = self._read_register(_REGISTER_HOT_JUNCTION, 2)
-        value = unpack(">xH", data)[0] * 0.0625
-        if data[1] & 0x80:
-            value -= 4096
-        return value
+        return self.temp_c(data)
 
     @property
     def delta_temperature(self):
         """ Delta temperature in Celsius """
         data = self._read_register(_REGISTER_DELTA_TEMP, 2)
-        value = unpack(">xH", data)[0] * 0.0625
-        if data[1] & 0x80:
-            value -= 4096
-        return value
+        return self.temp_c(data)
 
     def _read_register(self, reg, count=1):
-        self.buf[0] = reg
-        with self.i2c_device as i2c:
-            i2c.write_then_readinto(self.buf, self.buf, out_end=count, in_start=1)
+        self.singlebyte[0] = reg
+        self.i2c_device.writeto(self.ADDR, self.singlebyte)
+        self.i2c_device.readfrom_into(self.ADDR, self.buf)
         return self.buf
+
+    def temp_c2(self, byteData):
+        value = byteData[0] << 8 | byteData[1]
+        temp = (value & 0xFFF) / 16.0
+        if value & 0x1000:
+            temp -= 256.0
+        return temp
+
+    def temp_c(self, byteData):
+        # Taken from MCP9600 Datasheet:
+        # Temperature >= 0°C
+        # TΔ = (UpperByte x 16 + LowerByte / 16)
+        # Temperature < 0°C
+        # TΔ = (UpperByte x 16 + LowerByte / 16) - 4096
+
+        temp = (byteData[0] * 16 + byteData[1] / 16)
+        value = byteData[0] << 8 | byteData[1]
+
+        if value & 0x1000:
+            temp -= 4096.0
+        return temp
