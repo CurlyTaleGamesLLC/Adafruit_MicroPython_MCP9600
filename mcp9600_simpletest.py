@@ -10,7 +10,7 @@ import adafruit_mcp9600
 # frequency must be set for the MCP9600 to function.
 # If you experience I/O errors, try changing the frequency.
 
-i2c = I2C(0, scl=Pin(22), sda=Pin(21), freq=100000)
+i2c = I2C(scl=Pin(22), sda=Pin(21), freq=100000)
 mcp = adafruit_mcp9600.MCP9600(i2c, 96, "K", 0)
 
 while True:
